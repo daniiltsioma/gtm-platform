@@ -2,7 +2,7 @@
 
 ## Project
 
-Mini lead-tracking / GTM analytics platform — portfolio project. Currently built: leads come in via Typeform webhook, get tracked through stages, shown on a dashboard. Account/opportunity layer and multi-source attribution are NOT designed yet — leads-only for now.
+Mini lead-tracking / GTM analytics platform — portfolio project. Currently built: leads come in via Tally webhook, get tracked through stages, shown on a dashboard. Account/opportunity layer and multi-source attribution are NOT designed yet — leads-only for now.
 
 ## Stack
 
@@ -10,7 +10,7 @@ Mini lead-tracking / GTM analytics platform — portfolio project. Currently bui
 - Backend: Next.js API routes (no separate server)
 - Database: PostgreSQL via Supabase
 - Deploy: Vercel (app), Supabase (db)
-- Integrations: Typeform (webhook). Nothing else yet — add here only once actually built.
+- Integrations: Tally (webhook). Nothing else yet — add here only once actually built.
 
 ## Commands
 
@@ -20,7 +20,7 @@ Mini lead-tracking / GTM analytics platform — portfolio project. Currently bui
 
 ## Architecture
 
-- `/app/api/webhooks/` — inbound integration endpoints (Typeform)
+- `/app/api/webhooks/` — inbound integration endpoints (Tally)
 - `/app/api/leads/` — CRUD + stage updates for leads
 - `/app/api/dashboard/` — aggregated metrics for dashboard views
 - `/app/dashboard/` — main dashboard views
