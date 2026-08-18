@@ -34,6 +34,13 @@ type Lead = {
     created_at: string;
 };
 
+type RevenueStats = {
+    totalRevenue: number;
+    avgDealSize: number;
+    closedWonCount: number;
+    winRatePercent: number | null;
+};
+
 const STAGE_ORDER = [
     "new",
     "qualified",
@@ -65,9 +72,26 @@ function truncate(text: string, max: number): string {
     return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+function formatCurrency(amount: number): string {
+    return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 0,
+    }).format(amount);
+}
+
+function formatWinRate(percent: number | null): string {
+    // null is expected when there are no closed deals yet at all (neither
+    // won nor lost) — there's nothing to compute a rate from yet, not
+    // missing data.
+    if (percent === null) return "—";
+    return `${percent}%`;
+}
+
 export default function DashboardPage() {
     const [summary, setSummary] = useState<StageSummary[] | null>(null);
     const [leads, setLeads] = useState<Lead[] | null>(null);
+    const [revenue, setRevenue] = useState<RevenueStats | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -77,19 +101,22 @@ export default function DashboardPage() {
     );
 
     const loadData = useCallback(async () => {
-        const [summaryRes, leadsRes] = await Promise.all([
+        const [summaryRes, leadsRes, revenueRes] = await Promise.all([
             fetch("/api/dashboard/summary"),
             fetch("/api/leads"),
+            fetch("/api/dashboard/revenue"),
         ]);
 
-        if (!summaryRes.ok || !leadsRes.ok) {
+        if (!summaryRes.ok || !leadsRes.ok || !revenueRes.ok) {
             throw new Error("Failed to load dashboard data");
         }
 
         const summaryJson = await summaryRes.json();
         const leadsJson = await leadsRes.json();
+        const revenueJson = await revenueRes.json();
         setSummary(summaryJson.summary);
         setLeads(leadsJson.leads);
+        setRevenue(revenueJson);
     }, []);
 
     // `loading` starts true, so there's no separate setLoading(true) here —
@@ -168,7 +195,7 @@ export default function DashboardPage() {
         );
     }
 
-    if (loadError || !summary || !leads) {
+    if (loadError || !summary || !leads || !revenue) {
         return (
             <div className="p-6">
                 <p className="text-sm text-destructive">
@@ -302,6 +329,44 @@ export default function DashboardPage() {
                     );
                 })}
             </div>
+
+            {/* Aggregate business metrics, not a funnel stage — kept
+                visually distinct from the per-stage columns above via a
+                single full-width card (bg tint, horizontal layout)
+                instead of another grid tile. */}
+            <Card className="mt-6 bg-muted/30">
+                <CardHeader>
+                    <CardTitle>Revenue</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="flex flex-wrap gap-8">
+                        <div>
+                            <div className="text-3xl font-semibold">
+                                {formatCurrency(revenue.totalRevenue)}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                                Total closed revenue
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-3xl font-semibold">
+                                {formatCurrency(revenue.avgDealSize)}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                                Avg deal size
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-3xl font-semibold">
+                                {formatWinRate(revenue.winRatePercent)}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                                Win rate
+                            </div>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     );
 }

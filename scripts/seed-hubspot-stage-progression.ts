@@ -53,6 +53,12 @@ const STAGE_WEIGHTS: { stage: Stage; weight: number }[] = [
 const MIN_GAP_HOURS = 2;
 const MAX_GAP_HOURS = 48;
 
+// Copied from scripts/seed.ts's generateDealValue — same skew technique
+// (product of two uniform randoms) and range ($500-$15,000).
+function generateDealValue(): number {
+    return Math.round(500 + Math.random() * Math.random() * 14500);
+}
+
 function pickWeightedStage(): Stage {
     const total = STAGE_WEIGHTS.reduce((sum, s) => sum + s.weight, 0);
     let r = Math.random() * total;
@@ -152,10 +158,19 @@ async function progressHubspotLeads() {
         }
 
         // Update the existing lead's stage (and updated_at) to match its
-        // final stage — these are existing rows, not new inserts.
+        // final stage — these are existing rows, not new inserts. deal_value
+        // is set in this same update (not a separate step) so it can't be
+        // forgotten independently of the stage change. Only closed_won
+        // deals have a realized value — a lost deal (or one still in
+        // progress) has none.
         const { error: updateError } = await supabase
             .from("leads")
-            .update({ stage: finalStage, updated_at: cursor.toISOString() })
+            .update({
+                stage: finalStage,
+                deal_value:
+                    finalStage === "closed_won" ? generateDealValue() : null,
+                updated_at: cursor.toISOString(),
+            })
             .eq("id", lead.id);
 
         if (updateError) {

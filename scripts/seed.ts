@@ -7,7 +7,9 @@
 // Run with: npx tsx scripts/seed.ts
 // (or: npm install -D tsx, then add "seed": "tsx scripts/seed.ts" to package.json scripts)
 
-console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
+import dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
+
 import { supabase } from "../lib/db/client";
 
 // import { createClient } from "@supabase/supabase-js";
@@ -80,6 +82,13 @@ function pickWeightedStage(): Stage {
     return "new";
 }
 
+// Skewed toward the lower end (most deals are small, a few large) via
+// the product of two uniform randoms, rather than pulling in a real
+// statistical distribution library for a seed script. Range: $500-$15,000.
+function generateDealValue(): number {
+    return Math.round(500 + Math.random() * Math.random() * 14500);
+}
+
 function daysAgo(days: number): Date {
     const d = new Date();
     d.setDate(d.getDate() - days);
@@ -107,6 +116,17 @@ function stagePathTo(finalStage: Stage): Stage[] {
 }
 
 async function seed() {
+    // Dynamic import, deliberately not a static top-level import: this
+    // script calls dotenv.config() above to load SUPABASE_URL /
+    // SUPABASE_SERVICE_ROLE_KEY from .env.local, but lib/db/client.ts
+    // reads those env vars at its own module-evaluation time. A static
+    // `import { supabase } from "../lib/db/client"` at the top of this
+    // file would be hoisted and evaluated before dotenv.config() runs,
+    // capturing undefined env vars. Deferring the import until this
+    // function actually runs (after dotenv.config() has executed)
+    // avoids that ordering hazard.
+    const { supabase } = await import("../lib/db/client");
+
     console.log(`Seeding ${NUM_LEADS} leads...`);
 
     for (let i = 0; i < NUM_LEADS; i++) {
@@ -129,6 +149,10 @@ async function seed() {
                 email,
                 channel,
                 stage: finalStage,
+                // Only closed_won deals have a realized value — a lost
+                // deal (or one still in progress) has none.
+                deal_value:
+                    finalStage === "closed_won" ? generateDealValue() : null,
                 message:
                     Math.random() > 0.5
                         ? "Interested in learning more, please reach out."
