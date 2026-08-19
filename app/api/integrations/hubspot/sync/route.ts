@@ -1,50 +1,26 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/db/client";
+import {
+    fetchAllHubspotContacts,
+    parseHubspotContact,
+} from "@/lib/integrations/hubspot";
 
 // POST /api/integrations/hubspot/sync
 //
 // Pull-based integration — contrast with the Tally webhook, which is
-// push-based. This is triggered manually via API call for now, not on a
-// schedule. It fetches contacts from HubSpot's CRM API and upserts them
-// into `leads`, deduped by `external_id` (HubSpot's contact id).
+// push-based. Triggered manually via API call for now, not on a
+// schedule. HubSpot-specific concerns — authenticating, paginating, and
+// understanding HubSpot's contact data shape — live in
+// lib/integrations/hubspot.ts. This route owns everything that's a
+// decision about OUR data: matching HubSpot contacts to existing leads
+// by `external_id`, and the upsert/dedup business logic.
 //
 // `stage` is intentionally preserved on re-sync, not reset to 'new', so
 // re-running this doesn't undo pipeline progress a lead has made in our
 // own funnel since it was first synced.
 //
-// Pagination is handled properly here (follows `paging.next.after` until
-// HubSpot stops returning it), not capped at a fixed page/limit size —
-// see MAX_PAGES below for the unbounded-loop safety net only.
-//
 // Future improvement: switch this from a manually-triggered pull to a
 // HubSpot webhook-based push, for real-time sync instead of on-demand.
-
-const HUBSPOT_CONTACTS_ENDPOINT =
-    "https://api.hubapi.com/crm/v3/objects/contacts";
-
-// Safety cap: stop pagination after this many pages so an unexpectedly
-// large account (or a HubSpot API bug that never stops returning a
-// `paging.next` cursor) can't spin this into an unbounded number of
-// API calls.
-const MAX_PAGES = 50;
-
-type HubspotContact = {
-    id: string;
-    properties: {
-        firstname?: string | null;
-        lastname?: string | null;
-        email?: string | null;
-    };
-};
-
-type HubspotContactsResponse = {
-    results: HubspotContact[];
-    paging?: {
-        next?: {
-            after?: string;
-        };
-    };
-};
 
 export async function POST() {
     const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
@@ -55,48 +31,11 @@ export async function POST() {
         );
     }
 
-    const contacts: HubspotContact[] = [];
+    let rawContacts;
     try {
-        let after: string | undefined;
-        let pageCount = 0;
-
-        do {
-            const url = new URL(HUBSPOT_CONTACTS_ENDPOINT);
-            url.searchParams.set("properties", "firstname,lastname,email");
-            if (after) url.searchParams.set("after", after);
-
-            const res = await fetch(url, {
-                headers: { Authorization: `Bearer ${hubspotToken}` },
-            });
-
-            if (!res.ok) {
-                const body = await res.text();
-                console.error(
-                    `HubSpot contacts fetch failed (${res.status}):`,
-                    body,
-                );
-                return NextResponse.json(
-                    { error: "Failed to fetch contacts from HubSpot" },
-                    { status: 502 },
-                );
-            }
-
-            const json: HubspotContactsResponse = await res.json();
-            contacts.push(...(json.results ?? []));
-            after = json.paging?.next?.after;
-            pageCount++;
-
-            if (after && pageCount >= MAX_PAGES) {
-                console.warn(
-                    `HubSpot contacts sync hit the ${MAX_PAGES}-page safety cap ` +
-                        `(${contacts.length} contacts fetched so far); stopping early ` +
-                        `even though more pages were available.`,
-                );
-                break;
-            }
-        } while (after);
+        rawContacts = await fetchAllHubspotContacts(hubspotToken);
     } catch (err) {
-        console.error("HubSpot contacts fetch threw an error:", err);
+        console.error("Failed to fetch contacts from HubSpot:", err);
         return NextResponse.json(
             { error: "Failed to fetch contacts from HubSpot" },
             { status: 502 },
@@ -108,17 +47,14 @@ export async function POST() {
     let skipped = 0;
     const errors: string[] = [];
 
-    for (const contact of contacts) {
-        const email = contact.properties.email;
-        if (!email) {
+    for (const raw of rawContacts) {
+        const contact = parseHubspotContact(raw);
+        if (!contact) {
             skipped++;
             continue;
         }
 
-        const name =
-            [contact.properties.firstname, contact.properties.lastname]
-                .filter(Boolean)
-                .join(" ") || null;
+        const { external_id, name, email } = contact;
 
         // Check-then-upsert instead of a single .upsert({ onConflict:
         // 'external_id' }) call: Supabase's upsert would SET every column
@@ -129,16 +65,16 @@ export async function POST() {
         const { data: existingLead, error: lookupError } = await supabase
             .from("leads")
             .select("id,name,email")
-            .eq("external_id", contact.id)
+            .eq("external_id", external_id)
             .maybeSingle();
 
         if (lookupError) {
             console.error(
-                `Failed to look up lead for HubSpot contact ${contact.id}:`,
+                `Failed to look up lead for HubSpot contact ${external_id}:`,
                 lookupError,
             );
             errors.push(
-                `Lookup failed for contact ${contact.id}: ${lookupError.message}`,
+                `Lookup failed for contact ${external_id}: ${lookupError.message}`,
             );
             continue;
         }
@@ -151,11 +87,11 @@ export async function POST() {
 
             if (updateError) {
                 console.error(
-                    `Failed to update lead for HubSpot contact ${contact.id}:`,
+                    `Failed to update lead for HubSpot contact ${external_id}:`,
                     updateError,
                 );
                 errors.push(
-                    `Update failed for contact ${contact.id}: ${updateError.message}`,
+                    `Update failed for contact ${external_id}: ${updateError.message}`,
                 );
                 continue;
             }
@@ -169,17 +105,17 @@ export async function POST() {
                 email,
                 channel: "hubspot",
                 source: "hubspot",
-                external_id: contact.id,
+                external_id,
                 stage: "new",
             });
 
             if (insertError) {
                 console.error(
-                    `Failed to insert lead for HubSpot contact ${contact.id}:`,
+                    `Failed to insert lead for HubSpot contact ${external_id}:`,
                     insertError,
                 );
                 errors.push(
-                    `Insert failed for contact ${contact.id}: ${insertError.message}`,
+                    `Insert failed for contact ${external_id}: ${insertError.message}`,
                 );
                 continue;
             }
@@ -189,7 +125,7 @@ export async function POST() {
     }
 
     return NextResponse.json({
-        fetched: contacts.length,
+        fetched: rawContacts.length,
         inserted,
         updated,
         skipped,
