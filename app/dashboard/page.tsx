@@ -10,6 +10,15 @@
 
 import { useEffect, useState, useCallback } from "react";
 import {
+    BarChart,
+    Bar,
+    XAxis,
+    YAxis,
+    Tooltip,
+    Legend,
+    ResponsiveContainer,
+} from "recharts";
+import {
     Card,
     CardHeader,
     CardTitle,
@@ -40,6 +49,32 @@ type RevenueStats = {
     closedWonCount: number;
     winRatePercent: number | null;
 };
+
+type ChannelVelocity = {
+    channel: string;
+    new: number;
+    qualified: number;
+    opportunity: number;
+};
+
+// Non-terminal stages only — matches what funnel_velocity_by_channel (and
+// the /api/dashboard/channel-velocity route built on it) actually covers.
+// Colors are the design system's categorical slots 1/2/3 (blue/orange/
+// aqua), the only ordering of the eight that clears colorblind-safe
+// separation for a 3-series stack in both light and dark — see the
+// dataviz skill's palette reference. Set as CSS custom properties (light
+// value, dark override) rather than a plain JS object so they can swap
+// with the app's existing `.dark` class convention (see the Badge
+// treatment in the funnel columns above) without hardcoding one mode.
+const CHART_STAGES = ["new", "qualified", "opportunity"] as const;
+const CHART_COLOR_VARS: Record<(typeof CHART_STAGES)[number], string> = {
+    new: "var(--chart-stage-new)",
+    qualified: "var(--chart-stage-qualified)",
+    opportunity: "var(--chart-stage-opportunity)",
+};
+const CHART_COLOR_CLASSNAME =
+    "[--chart-stage-new:#2a78d6] [--chart-stage-qualified:#eb6834] [--chart-stage-opportunity:#1baf7a] " +
+    "dark:[--chart-stage-new:#3987e5] dark:[--chart-stage-qualified:#d95926] dark:[--chart-stage-opportunity:#199e70]";
 
 const STAGE_ORDER = [
     "new",
@@ -92,6 +127,9 @@ export default function DashboardPage() {
     const [summary, setSummary] = useState<StageSummary[] | null>(null);
     const [leads, setLeads] = useState<Lead[] | null>(null);
     const [revenue, setRevenue] = useState<RevenueStats | null>(null);
+    const [channelVelocity, setChannelVelocity] = useState<
+        ChannelVelocity[] | null
+    >(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -101,22 +139,31 @@ export default function DashboardPage() {
     );
 
     const loadData = useCallback(async () => {
-        const [summaryRes, leadsRes, revenueRes] = await Promise.all([
-            fetch("/api/dashboard/summary"),
-            fetch("/api/leads"),
-            fetch("/api/dashboard/revenue"),
-        ]);
+        const [summaryRes, leadsRes, revenueRes, channelVelocityRes] =
+            await Promise.all([
+                fetch("/api/dashboard/summary"),
+                fetch("/api/leads"),
+                fetch("/api/dashboard/revenue"),
+                fetch("/api/dashboard/channel-velocity"),
+            ]);
 
-        if (!summaryRes.ok || !leadsRes.ok || !revenueRes.ok) {
+        if (
+            !summaryRes.ok ||
+            !leadsRes.ok ||
+            !revenueRes.ok ||
+            !channelVelocityRes.ok
+        ) {
             throw new Error("Failed to load dashboard data");
         }
 
         const summaryJson = await summaryRes.json();
         const leadsJson = await leadsRes.json();
         const revenueJson = await revenueRes.json();
+        const channelVelocityJson = await channelVelocityRes.json();
         setSummary(summaryJson.summary);
         setLeads(leadsJson.leads);
         setRevenue(revenueJson);
+        setChannelVelocity(channelVelocityJson.data);
     }, []);
 
     // `loading` starts true, so there's no separate setLoading(true) here —
@@ -195,7 +242,7 @@ export default function DashboardPage() {
         );
     }
 
-    if (loadError || !summary || !leads || !revenue) {
+    if (loadError || !summary || !leads || !revenue || !channelVelocity) {
         return (
             <div className="p-6">
                 <p className="text-sm text-destructive">
@@ -364,6 +411,111 @@ export default function DashboardPage() {
                                 Win rate
                             </div>
                         </div>
+                    </div>
+                </CardContent>
+            </Card>
+
+            {/* Channel comparison, not a funnel stage — its own titled
+                section below Revenue. Same Card treatment as the rest of
+                the page, without Revenue's tint, so each section still
+                reads as visually distinct from its neighbors. */}
+            <Card className="mt-6">
+                <CardHeader>
+                    <CardTitle>Velocity by Channel</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <p className="mb-4 text-sm text-muted-foreground">
+                        Average time spent in each stage, by lead source —
+                        shorter total bars mean faster-moving leads.
+                    </p>
+                    <div className={CHART_COLOR_CLASSNAME}>
+                        <ResponsiveContainer
+                            width="100%"
+                            height={Math.max(
+                                160,
+                                channelVelocity.length * 60 + 60,
+                            )}
+                        >
+                            <BarChart
+                                data={channelVelocity}
+                                layout="vertical"
+                                margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
+                            >
+                                <XAxis
+                                    type="number"
+                                    stroke="var(--border)"
+                                    tick={{
+                                        fill: "var(--muted-foreground)",
+                                        fontSize: 12,
+                                    }}
+                                    label={{
+                                        value: "Avg hours in stage",
+                                        position: "insideBottom",
+                                        offset: -4,
+                                        fill: "var(--muted-foreground)",
+                                        fontSize: 12,
+                                    }}
+                                />
+                                <YAxis
+                                    type="category"
+                                    dataKey="channel"
+                                    width={110}
+                                    stroke="var(--border)"
+                                    tick={{
+                                        fill: "var(--muted-foreground)",
+                                        fontSize: 12,
+                                    }}
+                                />
+                                <Tooltip
+                                    formatter={(value, name) => [
+                                        `${Number(value).toFixed(1)}h`,
+                                        name,
+                                    ]}
+                                    contentStyle={{
+                                        backgroundColor: "var(--popover)",
+                                        color: "var(--popover-foreground)",
+                                        border: "1px solid var(--border)",
+                                        borderRadius: "var(--radius-md)",
+                                        fontSize: 12,
+                                    }}
+                                />
+                                <Legend
+                                    wrapperStyle={{
+                                        fontSize: 12,
+                                        color: "var(--muted-foreground)",
+                                    }}
+                                />
+                                {/* Stacking order also decides which segment
+                                    gets the free-end treatment: 'opportunity'
+                                    stacks last, so it's the only one with a
+                                    true free end (rounded cap) and the only
+                                    one that needs the relief label — the
+                                    lightest of the three fill colors (aqua)
+                                    dips under the 3:1 contrast floor against
+                                    the card surface per the dataviz skill's
+                                    validator, so its value additionally rides
+                                    the Legend + Tooltip already shipped here
+                                    (both mandatory for a 3-series chart
+                                    regardless) rather than a fourth import. */}
+                                {CHART_STAGES.map((stage, index) => (
+                                    <Bar
+                                        key={stage}
+                                        dataKey={stage}
+                                        name={formatStageName(stage)}
+                                        stackId="stages"
+                                        barSize={20}
+                                        radius={
+                                            index === CHART_STAGES.length - 1
+                                                ? [0, 4, 4, 0]
+                                                : undefined
+                                        }
+                                        fill={CHART_COLOR_VARS[stage]}
+                                        stroke="var(--card)"
+                                        strokeWidth={2}
+                                    />
+                                ))}
+                            </BarChart>
+                        </ResponsiveContainer>
                     </div>
                 </CardContent>
             </Card>
